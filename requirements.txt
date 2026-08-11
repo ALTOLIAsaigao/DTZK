@@ -1,0 +1,4 @@
+python-okx>=0.4.3
+requests>=2.31
+tzdata>=2024.1
+questionary>=2.1.0

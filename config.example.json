@@ -1,0 +1,50 @@
+{
+  "api": {
+    "api_key": "你的APIKey",
+    "secret_key": "你的SecretKey",
+    "passphrase": "你的Passphrase",
+    "flag": "1"
+  },
+  "contract": {
+    "inst_id": "BTC-USDT-SWAP",
+    "mgn_mode": "isolated",
+    "leverage": "1",
+    "order_type": "post_only",
+    "price_mode": "same_1",
+    "amount_usdt": "50",
+    "side": "sell"
+  },
+  "time": {
+    "start_date": "2026-01-01",
+    "end_date": "2026-12-31",
+    "date_type": "everyday",
+    "times": [
+      "10:00"
+    ]
+  },
+  "pause": {
+    "set_liq_px": null,
+    "target_px": null,
+    "safety_margin_pct": 0.0
+  },
+  "notify": {
+    "enabled": false,
+    "channel": "none",
+    "serverchan_key": "",
+    "pushplus_token": "",
+    "bark_url": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": ""
+  },
+  "runtime": {
+    "interval_sec": 20,
+    "monitor_interval_sec": 60,
+    "monitor_sec": 30,
+    "fill_wait_sec": 300,
+    "retry_max": 5,
+    "retry_interval_sec": 1,
+    "timezone": "Asia/Shanghai",
+    "log_file": "dtzk.log",
+    "proxy": ""
+  }
+}
