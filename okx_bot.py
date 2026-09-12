@@ -31,6 +31,8 @@ from stats import tracker
 
 logger = logging.getLogger("dtzk")
 
+ERROR_NOTIFY_COOLDOWN = 3600  # 运行异常推送冷却秒数（60分钟），避免网络抖动时反复轰炸手机
+
 
 def _get_tz(tz_name):
     """返回时区对象；找不到时区数据则兜底用固定 UTC+8（阿里云/腾讯云默认）。"""
@@ -55,10 +57,29 @@ class OKXClient:
 
         # 国内网络访问 OKX 必须走代理（OKX 不服务大陆 IP）。
         # proxy 为空时 SDK 的 httpx 会沿用 HTTP_PROXY/HTTPS_PROXY 环境变量。
-        self.account = AccountAPI(api_key, secret_key, passphrase, flag=flag, proxy=self.proxy or None)
-        self.trade = TradeAPI(api_key, secret_key, passphrase, flag=flag, proxy=self.proxy or None)
-        self.market = MarketAPI(flag=flag, proxy=self.proxy or None)
-        self.public = PublicAPI(flag=flag, proxy=self.proxy or None)
+        self._build_clients()
+
+    def _build_clients(self):
+        """创建四个 OKX API 客户端（httpx 长连接）。"""
+        self.account = AccountAPI(self.api_key, self.secret_key, self.passphrase,
+                                  flag=self.flag, proxy=self.proxy or None)
+        self.trade = TradeAPI(self.api_key, self.secret_key, self.passphrase,
+                              flag=self.flag, proxy=self.proxy or None)
+        self.market = MarketAPI(flag=self.flag, proxy=self.proxy or None)
+        self.public = PublicAPI(flag=self.flag, proxy=self.proxy or None)
+
+    def rebuild(self):
+        """丢弃并重建全部 API 客户端，清掉可能已损坏的 HTTP/2 长连接。
+
+        代理（mihomo）断连时，httpx 连接池里会残留坏连接；之后即使网络恢复，
+        请求仍会失败（表现为无信息的空异常），只有重建客户端才能恢复。
+        """
+        for c in (self.account, self.trade, self.market, self.public):
+            try:
+                c.close()
+            except Exception:
+                pass
+        self._build_clients()
 
     # ---------------------------------------------------------------- 网络容错
 
@@ -70,18 +91,28 @@ class OKXClient:
             except Exception as e:
                 if attempt >= retries:
                     raise
-                logger.warning("接口调用异常(%s)，%.1f 秒后第%d次重试…", e, delay * attempt, attempt + 1)
+                logger.warning("接口调用异常(%s)，%.1f 秒后第%d次重试…",
+                               self._safe_msg(e), delay * attempt, attempt + 1)
+                # 网络/代理断连会让 httpx 连接池残留坏连接，重建客户端确保下次用全新连接
+                self.rebuild()
                 time.sleep(delay * attempt)
 
     # ---------------------------------------------------------------- 基础封装
 
     @staticmethod
     def _safe_msg(e):
-        """把异常/返回值转成 ASCII 安全的字符串，Debian 等非 UTF-8 环境不会崩。"""
+        """把异常/返回值转成 ASCII 安全的字符串，Debian 等非 UTF-8 环境不会崩。
+
+        某些底层网络异常（如 httpcore 连接池耗尽）的 str() 为空，日志和推送
+        会只剩空括号 ()，无法定位；这里兜底显示异常类型名。
+        """
         try:
-            return str(e)
+            s = str(e)
         except UnicodeEncodeError:
-            return str(e).encode("ascii", errors="replace").decode("ascii")
+            s = str(e).encode("ascii", errors="replace").decode("ascii")
+        if not s and isinstance(e, Exception):
+            s = type(e).__name__
+        return s
 
     def test_connection(self):
         """登录校验：能读到账户余额即成功。返回 (ok, 响应)。"""
@@ -547,6 +578,8 @@ class OKXClient:
         done = set()     # 已执行过的定投时间点 'YYYY-MM-DD HH:MM'
         prev_gap = None  # 上一轮安全边际差距，用于判断缩小趋势
         last_monitor = datetime.now(self.tz) - timedelta(seconds=monitor_interval)
+        in_error = False          # 是否处于连续异常状态（用于恢复提示与推送冷却）
+        last_error_notify = 0.0   # 上次推送"运行异常"的时间戳
 
         # 启动时校验合约有效（避免 instId 拼错白跑）
         try:
@@ -565,6 +598,18 @@ class OKXClient:
             while True:
                 try:
                     now = datetime.now(self.tz)
+
+                    # 网络故障后探活：能读到余额说明已恢复，推一次"运行恢复"
+                    if in_error:
+                        try:
+                            ok, _ = self.test_connection()
+                        except Exception:
+                            ok = False
+                        if ok:
+                            logger.info("网络/代理已恢复，恢复正常执行")
+                            self.notify("运行恢复", "网络或代理已恢复，脚本继续正常运行")
+                            in_error = False
+
                     if end and now.date() > end:
                         self.notify("定投结束",
                                     f"已超过结束日期 {end}，定投结束，脚本退出")
@@ -664,8 +709,13 @@ class OKXClient:
                                "已收到 Ctrl+C，定投已暂停（当前仓位不受影响）。配置已保留，重启脚本即可继续。")
                     return
                 except Exception as e:
-                    logger.warning("执行循环出现异常，%s 秒后继续: %s", interval, e)
-                    self.notify("运行异常", f"脚本出现异常({e})，{interval}秒后自动恢复，请检查网络或代理")
+                    msg = self._safe_msg(e)
+                    logger.warning("执行循环出现异常，%s 秒后继续: %s", interval, msg)
+                    now_ts = time.time()
+                    if not in_error or now_ts - last_error_notify >= ERROR_NOTIFY_COOLDOWN:
+                        self.notify("运行异常", f"脚本出现异常({msg})，{interval}秒后自动恢复，请检查网络或代理")
+                        last_error_notify = now_ts
+                    in_error = True
                     try:
                         time.sleep(interval)
                     except KeyboardInterrupt:

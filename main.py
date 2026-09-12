@@ -455,12 +455,14 @@ def system_config(cfg):
         current_retry_max = r.get("retry_max", 5)
         current_retry_interval = r.get("retry_interval_sec", 1)
         current_fill_wait = r.get("fill_wait_sec", 300)
+        current_proxy = r.get("proxy") or ""
         choice = menu_select("系统设置", [
             (f"安全边际检测间隔（当前: {current_monitor}s）", "monitor"),
             (f"主循环轮询间隔（当前: {current_loop}s）", "loop"),
             (f"下单后等待成交超时（当前: {current_fill_wait}s）", "fill_wait"),
             (f"同向价挂单被拒重试次数（当前: {current_retry_max}次）", "retry_max"),
             (f"同向价挂单被拒重试间隔（当前: {current_retry_interval}s）", "retry_interval"),
+            (f"代理地址（当前: {current_proxy or '未设置'}）", "proxy"),
             ("返回主菜单", "back"),
         ], default="back")
 
@@ -550,6 +552,21 @@ def system_config(cfg):
                 r["retry_interval_sec"] = 1
             save_config(cfg)
             print(f"  ✅ 重试间隔 = {r['retry_interval_sec']}s")
+        elif choice == "proxy":
+            print("\n" + "-" * 56)
+            print("代理地址")
+            print("-" * 56)
+            print("国内服务器访问 OKX 必须走代理（OKX 不服务大陆 IP），")
+            print("填本地代理混合端口，如 http://127.0.0.1:7890（mihomo/Clash）。")
+            print("海外原生网络无需代理，输入 n 关闭。")
+            print("注意：改完后需回主菜单「重新登录」才会用新地址连 OKX。")
+            print("-" * 56)
+            val = input_str("请输入代理地址（n=关闭）", default=current_proxy or None, allow_empty=True)
+            if val is None or val.strip().lower() in ("n", "none"):
+                val = ""
+            r["proxy"] = val
+            save_config(cfg)
+            print(f"  ✅ 代理地址 = {val or '已关闭（直连/系统代理）'}")
         else:
             return
 
@@ -624,11 +641,11 @@ LOGO = r"""
   ██║  ██║   ██║    ███╔╝  ██╔═██╗
   ██████╔╝   ██║   ███████╗██║  ██╗
   ╚═════╝    ╚═╝   ╚══════╝╚═╝  ╚═╝
-    定投做空 · Dollar-Cost Averaging Short  v1.2
+    定投做空 · Dollar-Cost Averaging Short  v1.3
 
     作者：梦中分解与AI助手dsv4
     此脚本完全免费，旨在帮助喜欢做模式外的家人们管住手降低赌性
-    希望牧原🐷🐷一路长红，豆家军大获全胜
+    希望牧原和东瑞🐷🐷一路长红，豆家军大获全胜
     如有bug联系QQ 2334947006
 """
 
