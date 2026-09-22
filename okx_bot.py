@@ -31,8 +31,6 @@ from stats import tracker
 
 logger = logging.getLogger("dtzk")
 
-ERROR_NOTIFY_COOLDOWN = 3600  # 运行异常推送冷却秒数（60分钟），避免网络抖动时反复轰炸手机
-
 
 def _get_tz(tz_name):
     """返回时区对象；找不到时区数据则兜底用固定 UTC+8（阿里云/腾讯云默认）。"""
@@ -561,6 +559,30 @@ class OKXClient:
                 missed.append(slot_key)
         return missed
 
+    def _missed_by_network(self, start, end, cfg, done):
+        """网络恢复后回溯：返回波动区间 [start, end) 内已过时间且未执行的定投 slot。
+
+        done 记录的是成功走完下单流程的 slot；网络断导致下单抛异常时 slot 不会进 done，
+        因此「落在波动区间内且不在 done 里」就是网络波动导致的错过。
+        """
+        missed = []
+        d = start.date()
+        while d <= end.date():
+            for t in cfg["time"]["times"]:
+                hm = self._norm_hm(t)
+                slot_key = f"{d} {hm}"
+                if slot_key in done:
+                    continue
+                try:
+                    slot_dt = datetime.strptime(slot_key, "%Y-%m-%d %H:%M")
+                    slot_dt = slot_dt.replace(tzinfo=start.tzinfo)
+                except (ValueError, TypeError):
+                    continue
+                if start <= slot_dt < end:
+                    missed.append(slot_key)
+            d += timedelta(days=1)
+        return missed
+
     def run_loop(self, cfg):
         """主执行函数：时间调度 → 周期性安全边际监控 → 合约执行 → 自动补仓，直到结束/目标价。
 
@@ -578,8 +600,7 @@ class OKXClient:
         done = set()     # 已执行过的定投时间点 'YYYY-MM-DD HH:MM'
         prev_gap = None  # 上一轮安全边际差距，用于判断缩小趋势
         last_monitor = datetime.now(self.tz) - timedelta(seconds=monitor_interval)
-        in_error = False          # 是否处于连续异常状态（用于恢复提示与推送冷却）
-        last_error_notify = 0.0   # 上次推送"运行异常"的时间戳
+        error_start = None        # 网络波动开始时间；None 表示当前网络正常
 
         # 启动时校验合约有效（避免 instId 拼错白跑）
         try:
@@ -599,16 +620,22 @@ class OKXClient:
                 try:
                     now = datetime.now(self.tz)
 
-                    # 网络故障后探活：能读到余额说明已恢复，推一次"运行恢复"
-                    if in_error:
+                    # 网络故障后探活：能读到余额说明已恢复，回溯判断波动是否覆盖了定投点
+                    if error_start is not None:
                         try:
                             ok, _ = self.test_connection()
                         except Exception:
                             ok = False
                         if ok:
+                            recover_ts = datetime.now(self.tz)
+                            missed = self._missed_by_network(error_start, recover_ts, cfg, done)
+                            if missed:
+                                self.notify("定投错过",
+                                            "网络波动期间以下定投未执行: "
+                                            + ", ".join(m[-5:] for m in missed)
+                                            + "，请手动在 OKX 上补单")
                             logger.info("网络/代理已恢复，恢复正常执行")
-                            self.notify("运行恢复", "网络或代理已恢复，脚本继续正常运行")
-                            in_error = False
+                            error_start = None
 
                     if end and now.date() > end:
                         self.notify("定投结束",
@@ -711,11 +738,8 @@ class OKXClient:
                 except Exception as e:
                     msg = self._safe_msg(e)
                     logger.warning("执行循环出现异常，%s 秒后继续: %s", interval, msg)
-                    now_ts = time.time()
-                    if not in_error or now_ts - last_error_notify >= ERROR_NOTIFY_COOLDOWN:
-                        self.notify("运行异常", f"脚本出现异常({msg})，{interval}秒后自动恢复，请检查网络或代理")
-                        last_error_notify = now_ts
-                    in_error = True
+                    if error_start is None:
+                        error_start = datetime.now(self.tz)  # 记录本次网络波动的起点
                     try:
                         time.sleep(interval)
                     except KeyboardInterrupt:

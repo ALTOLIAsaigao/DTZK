@@ -233,6 +233,30 @@ missed4 = dummy._missed_slots(now_late, cfg_slot, set(), since=pause_start)
 check("_missed_slots since=11:00 只返回 14:30", len(missed4) == 1 and "14:30" in missed4[0],
       f"got {missed4}")
 
+# --- _missed_by_network ---
+cfg_net = {"time": {"times": ["10:00", "00:05"]}}
+# 波动区间覆盖 10:00（00:05 不在区间内）
+net_s1 = datetime(2026, 8, 7, 9, 30, 0, tzinfo=dummy.tz)
+net_e1 = datetime(2026, 8, 7, 11, 0, 0, tzinfo=dummy.tz)
+net_m1 = dummy._missed_by_network(net_s1, net_e1, cfg_net, set())
+check("_missed_by_network 覆盖 10:00", net_m1 == ["2026-08-07 10:00"], f"got {net_m1}")
+
+# done 里已有的 slot 不重复报
+net_m2 = dummy._missed_by_network(net_s1, net_e1, cfg_net, {"2026-08-07 10:00"})
+check("_missed_by_network done 排除", net_m2 == [], f"got {net_m2}")
+
+# 区间右边界 [start, end) 不含 end：slot 正好等于 end 不报
+net_s3 = datetime(2026, 8, 7, 9, 0, 0, tzinfo=dummy.tz)
+net_e3 = datetime(2026, 8, 7, 10, 0, 0, tzinfo=dummy.tz)
+net_m3 = dummy._missed_by_network(net_s3, net_e3, cfg_net, set())
+check("_missed_by_network 右边界不含 end", net_m3 == [], f"got {net_m3}")
+
+# 跨午夜：23:50 → 次日 00:10，覆盖次日 00:05
+net_s4 = datetime(2026, 8, 7, 23, 50, 0, tzinfo=dummy.tz)
+net_e4 = datetime(2026, 8, 8, 0, 10, 0, tzinfo=dummy.tz)
+net_m4 = dummy._missed_by_network(net_s4, net_e4, cfg_net, set())
+check("_missed_by_network 跨午夜 00:05", net_m4 == ["2026-08-08 00:05"], f"got {net_m4}")
+
 # --- _fmt_sz ---
 check("_fmt_sz 整数", OKXClient._fmt_sz(1.0) == "1")
 check("_fmt_sz 小数", OKXClient._fmt_sz(1.5) == "1.5")
